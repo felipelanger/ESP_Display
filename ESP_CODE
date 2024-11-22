@@ -1,0 +1,173 @@
+#include <ESP8266WiFi.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <DHT.h>
+#include <ESPping.h>
+
+
+// Configuração do Wi-Fi
+const char* ssid = "Nina_2G";
+const char* password = "Internet1003#";
+
+// Configuração da API
+const char* server = "raspberrypi.local";
+const int port = 5000;
+const String endpoint = "/getdata";
+
+// Configuração do Display OLED
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET    -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+unsigned long lastBlinkTime = 0;
+bool showNoSignal = true;
+
+// Configuração do Sensor DHT
+#define DHTPIN 0          // Pino onde o sensor DHT está conectado D# (GPIO 0)
+#define DHTTYPE DHT22      // Tipo do sensor DHT (DHT11 ou DHT22)
+DHT dht(DHTPIN, DHTTYPE);
+
+
+void setup() {
+  Serial.begin(115200);
+
+  // Inicializando o display OLED
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println(F("Falha ao inicializar o display OLED"));
+    while (true);
+  }
+  display.clearDisplay();
+
+  // Inicializando o DHT
+  dht.begin();
+
+  // Conexão Wi-Fi
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.print(".");
+  }
+  Serial.println("\nWi-Fi conectado!");
+}
+
+void loop() {
+  const char* target = "8.8.8.8"; // IP do Google DNS
+
+  // Leitura do DHT
+  float temperatura = dht.readTemperature();
+  float umidade = dht.readHumidity();
+  Serial.println(temperatura);
+  Serial.println(umidade);
+
+  // Verifica se os dados do DHT são válidos
+  if (isnan(temperatura) || isnan(umidade)) {
+    Serial.println("Falha ao ler o sensor DHT!");
+    temperatura = 0; // Define valores padrão em caso de erro
+    umidade = 0;
+  }
+
+  // Conexão com o servidor para obter corrente e potência
+  float corrente = 0.0, potencia = 0.0;
+  if (WiFi.status() == WL_CONNECTED) {
+    WiFiClient client;
+    if (client.connect(server, port)) {
+      client.print(String("GET ") + endpoint + " HTTP/1.1\r\n" +
+                   "Host: " + server + "\r\n" +
+                   "Connection: close\r\n\r\n");
+
+      unsigned long timeout = millis();
+      while (client.available() == 0) {
+        if (millis() - timeout > 5000) {
+          Serial.println("Timeout na resposta do servidor");
+          client.stop();
+          return;
+        }
+      }
+
+      // Processa a resposta HTTP
+      String response = client.readString();
+      Serial.println("Resposta do servidor:");
+      Serial.println(response);
+
+      // Extrai os valores de corrente e potência da resposta JSON
+      int correnteStart = response.indexOf("\"corrente\":") + 11;
+      int correnteEnd = response.indexOf(",", correnteStart);
+      String correnteStr = response.substring(correnteStart, correnteEnd);
+
+      int potenciaStart = response.indexOf("\"potencia\":") + 11;
+      int potenciaEnd = response.indexOf("}", potenciaStart);
+      String potenciaStr = response.substring(potenciaStart, potenciaEnd);
+
+      corrente = correnteStr.toFloat();
+      potencia = potenciaStr.toFloat();
+    } else {
+      Serial.println("Falha na conexão com o servidor");
+    }
+  } else {
+    Serial.println("Wi-Fi desconectado!");
+  }
+
+  if (Ping.ping(target, 4)) {
+    // Ping bem-sucedido
+    unsigned long responseTime = Ping.averageTime();
+    Serial.print("Net Status: OK | Latency: ");
+    Serial.print(responseTime);
+    Serial.println(" ms");
+
+    display.setTextSize(1);
+    display.setCursor(0, 50);
+    display.print(F("Net.: OK | time: "));
+    display.print((int)responseTime); // Converte para inteiro
+    display.display();
+  } else {
+    // Falha no ping, gerencia o "No Signal" piscante
+    unsigned long currentMillis = millis();
+
+    // Controla o estado da mensagem a cada 1 segundo
+    if (currentMillis - lastBlinkTime >= 250) {
+      showNoSignal = !showNoSignal; // Alterna estado
+      lastBlinkTime = currentMillis;
+    }
+
+    // Limpa e exibe a mensagem de "No Signal" se estiver ativa
+    display.setTextSize(2);
+    display.setCursor(0, 50);
+    if (showNoSignal) {
+      display.print(F("No Signal"));
+    } else {
+      display.print(F("          ")); // Espaços para apagar
+    }
+    display.display();
+  }
+
+  // Exibe os valores no display OLED
+  display.clearDisplay();
+
+  // Exibe a temperatura em tamanho 2
+  display.setTextSize(2);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.print(F("Tmp "));
+  display.print(temperatura, 1); // Converte para inteiro
+  display.print(F(" C"));
+
+  // Exibe os valores restantes em tamanho 1
+  display.setTextSize(1);
+  display.setCursor(0, 20);
+  display.print(F("Umid.: "));
+  display.print((int)umidade); // Converte para inteiro
+  display.print(F(" %"));
+
+  display.setCursor(0, 30);
+  display.print(F("Amp.: "));
+  display.print(corrente, 1); // Uma casa decimal
+  display.print(F(" A"));
+
+  display.setCursor(0, 40);
+  display.print(F("Power.: "));
+  display.print((int)potencia); // Converte para inteiro
+  display.print(F(" W"));
+
+  delay(2000); // Atualiza a cada 2 segundos
+}
